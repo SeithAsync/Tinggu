@@ -1,0 +1,4 @@
+-r requirements.txt
+torch
+panns-inference
+demucs
