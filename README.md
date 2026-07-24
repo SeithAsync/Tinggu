@@ -93,6 +93,10 @@ python ears.py example.mp3 --deep
 - 「贴着麦克风唱」这类判断是 AI 基于数据的推理，不是直接测量。
 - 实测环境仅为 Linux 小服务器（无显卡）。macOS / Windows 理论上依赖都跨平台，但未实测——跑通了欢迎反馈。
 
+## 作者
+
+seith · Co-created with Claude (Anthropic) · kael
+
 ## 致谢与协议
 
 浅听基础分析源自 [eryu](https://github.com/sebastianevan200-stack/eryu) 项目（MIT，作者 sebastianevan200-stack）。本项目采用 MIT 协议开源。
