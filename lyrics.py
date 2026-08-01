@@ -12,6 +12,7 @@
 """
 import argparse
 import json
+import os
 import pathlib
 import re
 import sys
@@ -25,11 +26,18 @@ TIMEOUT_S = 20
 SEARCH_LIMIT = 10
 DURATION_TOLERANCE_S = 2.0
 TAIL_MISMATCH_S = 30.0
-TIMESTAMP_RE = re.compile(r"\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+TIMESTAMP_RE = re.compile(r"\[(\d{1,3}):([0-5]?\d)(?:[.:](\d{1,3}))?\]")
 
 
 class LyricError(Exception):
     """人话报错：拿不到词、词为空、参数不对等，都走这里。"""
+
+
+def atomic_write_json(path, data):
+    """写同目录临时文件再 os.replace，防写一半留半截 JSON（单进程 CLI，原子替换即够）。"""
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    os.replace(temp, path)
 
 
 def fetch_json(url, data=None):
@@ -37,8 +45,8 @@ def fetch_json(url, data=None):
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
             return json.loads(response.read().decode("utf-8", "replace"))
-    except urllib.error.URLError as error:
-        raise LyricError(f"连不上网易云：{error.reason}") from None
+    except OSError as error:
+        raise LyricError(f"连不上网易云：{getattr(error, 'reason', error)}") from None
     except (json.JSONDecodeError, ValueError):
         raise LyricError("网易云返回的不是合法 JSON，接口可能变了") from None
 
@@ -46,19 +54,25 @@ def fetch_json(url, data=None):
 def netease_search(query):
     body = urllib.parse.urlencode({"s": query, "type": 1, "limit": SEARCH_LIMIT, "offset": 0}).encode()
     result = fetch_json(SEARCH_URL, data=body)
-    songs = ((result.get("result") or {}).get("songs")) or []
-    candidates = []
-    for song in songs:
-        artists = "/".join(artist.get("name", "") for artist in song.get("artists") or [])
-        candidates.append({"id": song.get("id"), "name": song.get("name", ""),
-                           "artist": artists, "duration_ms": song.get("duration", 0)})
+    try:
+        songs = ((result.get("result") or {}).get("songs")) or []
+        candidates = []
+        for song in songs:
+            artists = "/".join(artist.get("name", "") for artist in song.get("artists") or [])
+            candidates.append({"id": song.get("id"), "name": song.get("name", ""),
+                               "artist": artists, "duration_ms": int(song.get("duration") or 0)})
+    except (AttributeError, TypeError, KeyError, ValueError):
+        raise LyricError("网易云返回结构变了，接口可能改版") from None
     return candidates
 
 
 def netease_lyric(song_id):
     result = fetch_json(LYRIC_URL.format(id=song_id))
-    lrc = ((result.get("lrc") or {}).get("lyric")) or ""
-    tlrc = ((result.get("tlyric") or {}).get("lyric")) or ""
+    try:
+        lrc = ((result.get("lrc") or {}).get("lyric")) or ""
+        tlrc = ((result.get("tlyric") or {}).get("lyric")) or ""
+    except (AttributeError, TypeError, KeyError):
+        raise LyricError("网易云返回结构变了，接口可能改版") from None
     return lrc, tlrc
 
 
@@ -86,7 +100,7 @@ def parse_lrc(text):
             seconds = int(stamp.group(2))
             fraction = stamp.group(3) or "0"
             millis = int(fraction.ljust(3, "0")[:3])
-            lines.append([round(minutes * 60 + seconds + millis / 1000, 2), content])
+            lines.append([round(minutes * 60 + seconds + millis / 1000, 3), content])
     lines.sort(key=lambda item: item[0])
     return lines
 
@@ -196,7 +210,7 @@ def write_lyric_cache(cache_dir, audio_path, lyric):
     except (OSError, json.JSONDecodeError):
         data = {"sourcePath": str(audio_path)}
     data["lyric"] = lyric
-    result_file.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    atomic_write_json(result_file, data)
 
 
 def ensure_lyric(audio_path, cache_dir, selector, force):

@@ -4,6 +4,7 @@
 用法：python analyze_song.py <音频路径> <输出目录>
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,13 @@ INSTRUMENT_GROUPS = {
     "儿童声": ["Children playing", "Child speech, kid speaking", "Children shouting", "Babbling"],
     "口哨": ["Whistling", "Whistle"],
 }
+
+
+def atomic_write_json(path, data):
+    """写同目录临时文件再 os.replace，防写一半留半截 JSON（单进程 CLI，原子替换即够）。"""
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    os.replace(temp, path)
 
 
 def smooth_curve(curve, sr, np):
@@ -272,7 +280,7 @@ def analyze(audio_file, output_dir):
     for keep in ("lyric", "sourcePath"):
         if keep in old:
             result[keep] = old[keep]
-    result_file.write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n")
+    atomic_write_json(result_file, result)
     err_file.unlink(missing_ok=True)
 
 

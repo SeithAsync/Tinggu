@@ -59,9 +59,9 @@ def line_at(lines, t):
 def event_text(event, lines):
     text = f"{mmss(event['t'])} {event['label']}"
     if lines and ("人声" in event["label"] or "歌唱" in event["label"]):
-        句 = line_at(lines, event["t"])
-        if 句:
-            text += f" ♪「{句}」"
+        lyric_text = line_at(lines, event["t"])
+        if lyric_text:
+            text += f" ♪「{lyric_text}」"
     return text
 
 
@@ -72,8 +72,11 @@ def print_lyric_section(data):
     print("—— 歌词 ——")
     lines = lyric.get("lines") or []
     if lines:
+        previous = None
         for _, text in lines:
-            print(text)
+            if text != previous:
+                print(text)
+            previous = text
         if (lyric.get("tlrc") or "").strip():
             print("（翻译已缓存）")
     else:
@@ -265,7 +268,7 @@ def run_deep(data, cache_dir, force):
             vocals_y, vocals_rms = y, rms
     profile = voice_profile(vocals_y, vocals_rms, timeline["vocals"], librosa, np)
     data.update({"stemTimeline": timeline, "voiceProfile": profile, "deepVersion": 1})
-    (cache_dir / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    lyrics.atomic_write_json(cache_dir / "analysis.json", data)
     return data
 
 
@@ -282,8 +285,8 @@ def print_deep_report(data):
     if lines and vocal_segments:
         print("—— 人声落词 ——")
         for start, end in vocal_segments:
-            句 = line_at(lines, start)
-            print(f"人声 {mmss(start)}-{mmss(end)}" + (f" ♪「{句}」" if 句 else ""))
+            lyric_text = line_at(lines, start)
+            print(f"人声 {mmss(start)}-{mmss(end)}" + (f" ♪「{lyric_text}」" if lyric_text else ""))
     print("—— 嗓音质地 ——")
     profile = data["voiceProfile"]
     if profile is None:
@@ -311,16 +314,25 @@ def main(argv=None):
         parser.error(f"音频文件不存在：{args.audio}")
     cache_dir = pathlib.Path.cwd() / "ears_cache" / audio_path.stem
     try:
+        cached_source = read_cache(cache_dir / "analysis.json").get("sourcePath")
+        if cached_source and cached_source != str(audio_path):
+            print("缓存来自别的文件，重新分析", file=sys.stderr)
+            shutil.rmtree(cache_dir, ignore_errors=True)
         data = ensure_shallow(audio_path, cache_dir, args.force)
         if data.get("sourcePath") != str(audio_path):
             data["sourcePath"] = str(audio_path)
-            (cache_dir / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            lyrics.atomic_write_json(cache_dir / "analysis.json", data)
+        lyric_failed = False
         if args.lyric:
-            data["lyric"] = lyrics.ensure_lyric(audio_path, cache_dir, args.lyric, args.force)
+            try:
+                data["lyric"] = lyrics.ensure_lyric(audio_path, cache_dir, args.lyric, args.force)
+            except lyrics.LyricError as error:
+                print(f"配词失败：{error}（报告照常打印）", file=sys.stderr)
+                lyric_failed = True
         print_shallow_report(data, cache_dir)
         if args.deep:
             print_deep_report(run_deep(data, cache_dir, args.force))
-        return 0
+        return 1 if lyric_failed else 0
     except subprocess.TimeoutExpired as error:
         print(f"失败：子进程超过 {error.timeout} 秒未完成", file=sys.stderr)
     except subprocess.CalledProcessError as error:
