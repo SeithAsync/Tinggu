@@ -264,6 +264,14 @@ def analyze(audio_file, output_dir):
                         "chromaBySegment": chroma_by_segment, "brightnessBySegment": brightness_by_segment,
                         "brightnessTrend": brightness_trend, "vocalSegments": vocal_segments, "events": events},
     }
+    # 覆盖前把歌词和源路径从旧结果搬过来，别让重算把浅听之外的字段冲掉
+    try:
+        old = json.loads(result_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        old = {}
+    for keep in ("lyric", "sourcePath"):
+        if keep in old:
+            result[keep] = old[keep]
     result_file.write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n")
     err_file.unlink(missing_ok=True)
 

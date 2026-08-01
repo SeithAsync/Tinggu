@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+import lyrics
+
 TRACKS = ("vocals", "drums", "bass", "guitar", "piano", "other")
 STEM_CN = {"vocals": "人声", "drums": "鼓", "bass": "贝斯", "guitar": "吉他", "piano": "钢琴", "other": "其它"}
 STEM_ACTIVE_RATIO = 0.12
@@ -39,6 +41,45 @@ def mmss(seconds):
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def lyric_lines(data):
+    return ((data.get("lyric") or {}).get("lines")) or []
+
+
+def line_at(lines, t):
+    """取最后一个起点 <= t 的歌词句，没有则 None。"""
+    hit = None
+    for start, text in lines:
+        if start <= t:
+            hit = text
+        else:
+            break
+    return hit
+
+
+def event_text(event, lines):
+    text = f"{mmss(event['t'])} {event['label']}"
+    if lines and ("人声" in event["label"] or "歌唱" in event["label"]):
+        句 = line_at(lines, event["t"])
+        if 句:
+            text += f" ♪「{句}」"
+    return text
+
+
+def print_lyric_section(data):
+    lyric = data.get("lyric")
+    if not lyric:
+        return
+    print("—— 歌词 ——")
+    lines = lyric.get("lines") or []
+    if lines:
+        for _, text in lines:
+            print(text)
+        if (lyric.get("tlrc") or "").strip():
+            print("（翻译已缓存）")
+    else:
+        print((lyric.get("lrc") or "").rstrip())
+
+
 def print_shallow_report(data, cache_dir):
     print(f"=== 《{data.get('name') or ''}》===")
     print(f"时长 {round(data.get('duration', 0))}s | BPM {data.get('bpm', '?')} | 主导音 {data.get('key', '?')}")
@@ -51,7 +92,8 @@ def print_shallow_report(data, cache_dir):
         print(f"能量曲线(六段) {bar}  最烈 {segments[peak]['start']:.0f}-{segments[peak]['end']:.0f}s / 最静 {segments[low]['start']:.0f}-{segments[low]['end']:.0f}s")
     arrangement = data.get("arrangement") or {}
     print("—— 编曲时间轴 ——")
-    event_texts = [f"{mmss(event['t'])} {event['label']}" for event in arrangement.get("events", [])]
+    lines = lyric_lines(data)
+    event_texts = [event_text(event, lines) for event in arrangement.get("events", [])]
     for index in range(0, len(event_texts), 8):
         print(" · ".join(event_texts[index:index + 8]))
     vocal_segments = arrangement.get("vocalSegments") or []
@@ -74,6 +116,7 @@ def print_shallow_report(data, cache_dir):
     png = pathlib.Path(data.get("spectrogram") or cache_dir / f"{data.get('name', '')}_analysis.png")
     if png.exists():
         print(f"频谱图: {png}")
+    print_lyric_section(data)
 
 
 def ensure_shallow(audio_path, cache_dir, force):
@@ -234,6 +277,13 @@ def print_deep_report(data):
     print(" · ".join(f"{STEM_CN[track]} " +
                      (", ".join(f"{mmss(start)}-{mmss(end)}" for start, end in segments) if segments else "无")
                      for track, segments in rows))
+    lines = lyric_lines(data)
+    vocal_segments = timeline.get("vocals") or []
+    if lines and vocal_segments:
+        print("—— 人声落词 ——")
+        for start, end in vocal_segments:
+            句 = line_at(lines, start)
+            print(f"人声 {mmss(start)}-{mmss(end)}" + (f" ♪「{句}」" if 句 else ""))
     print("—— 嗓音质地 ——")
     profile = data["voiceProfile"]
     if profile is None:
@@ -241,17 +291,20 @@ def print_deep_report(data):
         return
     soft = profile["softWindow"]
     burst = profile["burstWindow"]
-    print(f"轻唱窗(起点 {mmss(soft['start'])})：气息噪声 {soft['breathNoiseRatio'] * 100:.1f}% | 空气感 {soft['airRatio'] * 100:.1f}%")
-    print(f"爆发窗(起点 {mmss(burst['start'])})：气息噪声 {burst['breathNoiseRatio'] * 100:.1f}% | 空气感 {burst['airRatio'] * 100:.1f}%")
+    soft_lyric = f" ♪「{line_at(lines, soft['start'])}」" if lines and line_at(lines, soft["start"]) else ""
+    burst_lyric = f" ♪「{line_at(lines, burst['start'])}」" if lines and line_at(lines, burst["start"]) else ""
+    print(f"轻唱窗(起点 {mmss(soft['start'])})：气息噪声 {soft['breathNoiseRatio'] * 100:.1f}% | 空气感 {soft['airRatio'] * 100:.1f}%{soft_lyric}")
+    print(f"爆发窗(起点 {mmss(burst['start'])})：气息噪声 {burst['breathNoiseRatio'] * 100:.1f}% | 空气感 {burst['airRatio'] * 100:.1f}%{burst_lyric}")
     tail = "null" if profile["tailReverb"] is None else f"{profile['tailReverb']:.2f}s"
     print(f"响度倍数 {profile['loudnessRatio']:.1f} | 尾音混响 {tail}")
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(usage="%(prog)s <音频路径> [--deep] [--force]")
+    parser = argparse.ArgumentParser(usage="%(prog)s <音频路径> [--deep] [--force] [--lyric 值]")
     parser.add_argument("audio", help="本地音频文件")
     parser.add_argument("--deep", action="store_true", help="运行六轨与嗓音质地深听")
     parser.add_argument("--force", action="store_true", help="忽略缓存并重新计算")
+    parser.add_argument("--lyric", help="配歌词：网易云 ID / 链接 / 本地 .lrc·.txt / \"歌名 歌手\"（自动判别）")
     args = parser.parse_args(argv)
     audio_path = pathlib.Path(args.audio).expanduser().resolve()
     if not audio_path.is_file():
@@ -262,6 +315,8 @@ def main(argv=None):
         if data.get("sourcePath") != str(audio_path):
             data["sourcePath"] = str(audio_path)
             (cache_dir / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        if args.lyric:
+            data["lyric"] = lyrics.ensure_lyric(audio_path, cache_dir, args.lyric, args.force)
         print_shallow_report(data, cache_dir)
         if args.deep:
             print_deep_report(run_deep(data, cache_dir, args.force))
