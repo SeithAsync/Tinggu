@@ -2,3 +2,6 @@
 torch
 panns-inference
 demucs
+basic-pitch
+onnxruntime
+pretty-midi

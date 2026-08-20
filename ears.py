@@ -142,6 +142,26 @@ def require_deep_dependencies():
         raise RuntimeError("深听需要额外安装：pip install -r requirements-deep.txt") from None
 
 
+def memory_gate(required_mb, step_name):
+    """检查 Linux 可用内存；没有 /proc/meminfo 的平台直接放行。"""
+    meminfo = pathlib.Path("/proc/meminfo")
+    if not meminfo.exists():
+        return True
+    available = None
+    for line in meminfo.read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            available = int(line.split()[1]) // 1024
+            break
+    if available is None:
+        print("内存检查失败：/proc/meminfo 缺少 MemAvailable。", file=sys.stderr)
+        return False
+    if available < required_mb:
+        print(f"内存不足：{step_name} 需要约 {required_mb}MB，当前可用 {available}MB。关闭一些程序后重试。",
+              file=sys.stderr)
+        return False
+    return True
+
+
 def split_stems(audio_path, destination):
     if all((destination / f"{track}.mp3").exists() for track in TRACKS):
         return
@@ -250,25 +270,67 @@ def voice_profile(y, rms, vocal_segments, librosa, np):
 
 def run_deep(data, cache_dir, force):
     require_deep_dependencies()
-    if "deepVersion" in data and not force:
-        return data
-    import librosa
-    import numpy as np
-
     destination = cache_dir / "stems"
-    split_stems(pathlib.Path(data["sourcePath"]), destination)
-    timeline = {}
-    vocals_y = None
-    vocals_rms = None
-    for track in TRACKS:
-        y, _ = librosa.load(destination / f"{track}.mp3", sr=SR, mono=True)
-        rms = smooth_rms(y, librosa, np)
-        timeline[track] = active_segments(rms, np)
-        if track == "vocals":
-            vocals_y, vocals_rms = y, rms
-    profile = voice_profile(vocals_y, vocals_rms, timeline["vocals"], librosa, np)
-    data.update({"stemTimeline": timeline, "voiceProfile": profile, "deepVersion": 1})
-    lyrics.atomic_write_json(cache_dir / "analysis.json", data)
+    result_file = cache_dir / "analysis.json"
+    if force:
+        for field in ("notes", "noteSummary", "notesVersion", "chordAnalysis", "chordsVersion"):
+            data.pop(field, None)
+
+    if force or "deepVersion" not in data:
+        import librosa
+        import numpy as np
+
+        if not all((destination / f"{track}.mp3").exists() for track in TRACKS):
+            if not memory_gate(4000, "拆轨"):
+                raise RuntimeError("深听已停止。")
+            split_stems(pathlib.Path(data["sourcePath"]), destination)
+        timeline = {}
+        vocals_y = None
+        vocals_rms = None
+        for track in TRACKS:
+            y, _ = librosa.load(destination / f"{track}.mp3", sr=SR, mono=True)
+            rms = smooth_rms(y, librosa, np)
+            timeline[track] = active_segments(rms, np)
+            if track == "vocals":
+                vocals_y, vocals_rms = y, rms
+        profile = voice_profile(vocals_y, vocals_rms, timeline["vocals"], librosa, np)
+        data.update({"stemTimeline": timeline, "voiceProfile": profile, "deepVersion": 1})
+        lyrics.atomic_write_json(result_file, data)
+
+    notes_ready = "notesVersion" in data and not force
+    if not notes_ready:
+        if not memory_gate(1500, "音符提取"):
+            raise RuntimeError("深听已停止。")
+        try:
+            import harmonic_filter
+            import notes
+
+            raw_tracks = notes.extract(destination, out_path=None)
+            filtered_tracks = {}
+            summary = {}
+            for track in ("vocals", "bass", "guitar", "piano", "other"):
+                filtered, stats = harmonic_filter.filter_notes(track, raw_tracks.get(track, []))
+                filtered_tracks[track] = filtered
+                summary[track] = stats
+            data.update({"notes": filtered_tracks, "noteSummary": summary, "notesVersion": 1})
+            lyrics.atomic_write_json(result_file, data)
+            notes_ready = True
+        except Exception as error:
+            print(f"本轮音符提取失败，不复用旧 notes：{error}", file=sys.stderr)
+            for field in ("notes", "noteSummary", "notesVersion", "chordAnalysis", "chordsVersion"):
+                data.pop(field, None)
+            lyrics.atomic_write_json(result_file, data)
+
+    if notes_ready and (force or "chordsVersion" not in data):
+        try:
+            import chords
+
+            analysis = chords.analyze(data["notes"], bpm=data.get("bpm"),
+                                      duration=data.get("duration"))
+            data.update({"chordAnalysis": analysis, "chordsVersion": 1})
+            lyrics.atomic_write_json(result_file, data)
+        except Exception as error:
+            print(f"和弦分析失败：{error}", file=sys.stderr)
     return data
 
 
@@ -291,15 +353,52 @@ def print_deep_report(data):
     profile = data["voiceProfile"]
     if profile is None:
         print("器乐曲，嗓音质地跳过")
-        return
-    soft = profile["softWindow"]
-    burst = profile["burstWindow"]
-    soft_lyric = f" ♪「{line_at(lines, soft['start'])}」" if lines and line_at(lines, soft["start"]) else ""
-    burst_lyric = f" ♪「{line_at(lines, burst['start'])}」" if lines and line_at(lines, burst["start"]) else ""
-    print(f"轻唱窗(起点 {mmss(soft['start'])})：气息噪声 {soft['breathNoiseRatio'] * 100:.1f}% | 空气感 {soft['airRatio'] * 100:.1f}%{soft_lyric}")
-    print(f"爆发窗(起点 {mmss(burst['start'])})：气息噪声 {burst['breathNoiseRatio'] * 100:.1f}% | 空气感 {burst['airRatio'] * 100:.1f}%{burst_lyric}")
-    tail = "null" if profile["tailReverb"] is None else f"{profile['tailReverb']:.2f}s"
-    print(f"响度倍数 {profile['loudnessRatio']:.1f} | 尾音混响 {tail}")
+    else:
+        soft = profile["softWindow"]
+        burst = profile["burstWindow"]
+        soft_lyric = f" ♪「{line_at(lines, soft['start'])}」" if lines and line_at(lines, soft["start"]) else ""
+        burst_lyric = f" ♪「{line_at(lines, burst['start'])}」" if lines and line_at(lines, burst["start"]) else ""
+        print(f"轻唱窗(起点 {mmss(soft['start'])})：气息噪声 {soft['breathNoiseRatio'] * 100:.1f}% | 空气感 {soft['airRatio'] * 100:.1f}%{soft_lyric}")
+        print(f"爆发窗(起点 {mmss(burst['start'])})：气息噪声 {burst['breathNoiseRatio'] * 100:.1f}% | 空气感 {burst['airRatio'] * 100:.1f}%{burst_lyric}")
+        tail = "null" if profile["tailReverb"] is None else f"{profile['tailReverb']:.2f}s"
+        print(f"响度倍数 {profile['loudnessRatio']:.1f} | 尾音混响 {tail}")
+
+    print("—— 音符（滤网后）——")
+    notes_by_track = data.get("notes") or {}
+    for track in ("vocals", "bass", "guitar", "piano", "other"):
+        track_notes = notes_by_track.get(track) or []
+        if track_notes:
+            lowest = min(track_notes, key=lambda note: note["pitch"])["note_name"]
+            highest = max(track_notes, key=lambda note: note["pitch"])["note_name"]
+            print(f"{STEM_CN[track]} {len(track_notes)} 个 [{lowest}-{highest}]")
+        else:
+            print(f"{STEM_CN[track]} 无")
+    deleted = sum(stats.get(key, 0) for stats in (data.get("noteSummary") or {}).values()
+                  for key in ("range", "duration", "overlap"))
+    print(f"滤网合计删除 {deleted} 个")
+
+    print("—— 和弦 ——")
+    analysis = data.get("chordAnalysis") or {}
+    key = analysis.get("key")
+    if key:
+        root, mode = key.split()
+        print(f"调性: {root} {'大调' if mode == 'major' else '小调'} "
+              f"(置信 {analysis.get('keyConfidence', 0):.2f})")
+    else:
+        print("调性: 未检出")
+    loop = analysis.get("loop")
+    if loop:
+        name_text = f" · {loop['name']}" if loop.get("name") else ""
+        print(f"主循环: {'–'.join(loop['chords'])} ×{loop['count']} "
+              f"(覆盖 {loop['coverage'] * 100:.0f}%){name_text}")
+    else:
+        print("主循环: 未检出")
+    spans = analysis.get("spans") or []
+    for span in [item for item in spans if item.get("chord") != "?"][:12]:
+        print(f"{mmss(span['start'])} {span['chord']}")
+    unknown_count = sum(span.get("chord") == "?" for span in spans)
+    if unknown_count:
+        print(f"另有 {unknown_count} 段未识别（?）")
 
 
 def main(argv=None):

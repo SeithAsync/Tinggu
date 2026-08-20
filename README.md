@@ -1,4 +1,4 @@
-# 听骨 tinggu
+# 听骨 tinggu v1.2
 
 人耳深处有三块全身最小的骨头——听小骨。它们自己不会「听」，它们的工作是把外界的振动，翻译成内耳能接收的信号。
 
@@ -22,12 +22,44 @@
 
 **两档的差异一句话**：浅听给「歌的形状」，深听给「乐器署名、退潮瞬间、嗓音质地」——真正打动人的细节，大多住在深听里。
 
+### 音符层（v1.2）
+
+深听会把人声、贝斯、吉他、钢琴和其它五轨逐轨送入 Basic Pitch，鼓轨不参与音高识别。提取结果再经过音域、短音和重叠音三道泛音滤网，报告给出各轨音符数、音域以及滤网删除总数。这一层随深听自动运行，无需单独命令。
+
+干跑报告的真实输出：
+
+```text
+—— 音符（滤网后）——
+人声 1 个 [C4-C4]
+贝斯 无
+吉他 2 个 [G3-G4]
+钢琴 无
+其它 无
+滤网合计删除 0 个
+```
+
+### 和弦层（v1.2）
+
+和弦层只用 Python 标准库，从滤网后的音符识别调性、和弦时间段和重复进行；贝斯音会参与根音加权，置信不足的窗口标为 `?`。常见进行会附上名称。这一层同样由深听自动附带，无需单独命令。
+
+同一次干跑的真实输出：
+
+```text
+—— 和弦 ——
+调性: C 大调 (置信 0.86)
+主循环: Am–F–C–G ×2 (覆盖 100%) · 1564
+0:00 Am
+0:02 F
+0:04 C
+0:06 G
+```
+
 ## 两档取舍（实测数据）
 
 | 档位 | 实测耗时（无显卡小服务器） | 依赖 | 产出 |
 | --- | --- | --- | --- |
 | 浅听 | 3 分钟的歌约 35 秒 | 轻量（librosa 等，见 requirements.txt） | 基础信息、能量六段、编曲时间轴、声音标签、调性走向、频谱图 |
-| 深听 | 2.5 分钟的歌约 3 分钟；4-5 分钟的歌约 5 分钟；有显卡快一个量级 | 追加约 2.5G（torch/demucs/panns） | 浅听全部，加六轨分离、每件乐器精确起止、嗓音质地 |
+| 深听 | 2.5 分钟的歌约 3 分钟；4-5 分钟的歌约 5 分钟；有显卡快一个量级 | 追加约 2.5G（torch/demucs/panns/Basic Pitch） | 浅听全部，加六轨分离、每件乐器精确起止、嗓音质地、音符与和弦 |
 
 分析过的歌有缓存，重复运行秒出。
 
@@ -47,7 +79,7 @@ pip install -r requirements.txt
 pip install -r requirements-deep.txt
 ```
 
-首次深听会自动下载模型，需要联网。PANNs 模型约 330MB，默认放到 `~/panns_data`；demucs 模型约 80MB。
+深听依赖还包括 `basic-pitch`、`onnxruntime` 和 `pretty-midi`，已列入 `requirements-deep.txt`。首次深听会自动下载模型，需要联网。PANNs 模型约 330MB，默认放到 `~/panns_data`；demucs 模型约 80MB。
 
 ## 用法
 
@@ -116,6 +148,13 @@ python ears.py example.mp3 --lyric "https://music.163.com/song?id=..."
 
 seith · Co-created with Claude (Anthropic) · kael
 
-## 致谢与协议
+## 致谢 / Acknowledgments
+
+- **Basic Pitch**（Spotify，Apache-2.0）：音符提取模型。
+- **whale-listen**（migratorywhale，MIT）：全曲 MIDI 化路线的先行者，音符层方向受它启发。
+- **Ocean Listen / 听海**（ennisaaaaaaaa-stack，MIT）：Tinggu 的下游项目，泛音滤网参数按它的校准值重写；它合并了 Tinggu 并回馈思路，这是双向的来往。
+- **和弦层为本项目原创实现**：调性识别方法出自 Krumhansl-Schmuckler key-finding profile。
+
+## 协议
 
 浅听基础分析源自 [eryu](https://github.com/sebastianevan200-stack/eryu) 项目（MIT，作者 sebastianevan200-stack）。本项目采用 MIT 协议开源。
