@@ -145,7 +145,11 @@ pip install -r requirements-deep.txt
 
 深听依赖还包括 `basic-pitch`、`onnxruntime` 和 `pretty-midi`，已列入 `requirements-deep.txt`。首次深听会自动下载模型，需要联网。PANNs 模型约 330MB，默认放到 `~/panns_data`；demucs 模型约 80MB。
 
-`requirements-deep.txt` 里的 `praat-parselmouth` 是可选项：装了才有声线质感中的哑度、振幅抖动与噪比三项，不装其余照常输出。
+声线质感里的哑度、振幅抖动与噪比三项由 praat 提供，单独可选安装；不装则这三项留空，其余照常输出：
+
+```bash
+pip install praat-parselmouth
+```
 
 跑测试（可选，需要 `pip install -r requirements-dev.txt`）：
 

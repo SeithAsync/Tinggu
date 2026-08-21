@@ -678,7 +678,8 @@ def run_deep(data, cache_dir, force):
     line_file = cache_dir / "lines.json"
 
     if force:
-        for field in ("notes", "noteSummary", "notesVersion", "chordAnalysis", "chordsVersion",
+        for field in ("deepVersion", "stemTimeline", "voiceProfile",
+                      "notes", "noteSummary", "notesVersion", "chordAnalysis", "chordsVersion",
                       "harmonyMotion", "motionVersion", "tension", "lineVersion", "voiceTexture"):
             data.pop(field, None)
         try:
@@ -686,13 +687,14 @@ def run_deep(data, cache_dir, force):
         except FileNotFoundError:
             pass
 
-    needs_deep = "deepVersion" not in data
-    needs_notes = data.get("notesVersion") != NOTES_VERSION
-    needs_chords = needs_notes or data.get("chordsVersion") != CHORDS_VERSION
-    needs_motion = needs_chords or "motionVersion" not in data
-    needs_tension = needs_deep or needs_motion or "tension" not in data
-    needs_lines = needs_deep or needs_motion or "lineVersion" not in data or not line_file.exists()
-    needs_texture = (needs_lines or "voiceTexture" not in data
+    needs_deep = force or "deepVersion" not in data
+    needs_notes = force or data.get("notesVersion") != NOTES_VERSION
+    needs_chords = force or needs_notes or data.get("chordsVersion") != CHORDS_VERSION
+    needs_motion = force or needs_chords or "motionVersion" not in data
+    needs_tension = force or needs_deep or needs_motion or "tension" not in data
+    needs_lines = (force or needs_deep or needs_motion or "lineVersion" not in data
+                   or not line_file.exists())
+    needs_texture = (force or needs_lines or "voiceTexture" not in data
                      or (data.get("voiceTexture") or {}).get("textureVersion") != TEXTURE_VERSION)
 
     stem_rms_by_track = {}
