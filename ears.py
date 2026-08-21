@@ -30,6 +30,34 @@ SR = 22050
 HOP = 512
 
 
+# 共听礼仪：报告是给 AI 读的材料，不是给人读的成品。规矩印在任何数字之前，
+# 让读报告的 AI 先拿到框架再拿到数据；浅听印精简版，深听印全本。
+ETIQUETTE_SHALLOW = """【共听礼仪 · 浅听】
+下面是给你读的材料，不是给人读的成品。别复述它——
+挑一个整体印象说，把数字译成耳朵能感知的动作，
+最后落到一个具体时刻，让人自己去听。
+
+体裁：简短、少术语的第一印象小笺。
+"""
+
+ETIQUETTE_DEEP = """【共听礼仪 · 深听】
+下面这份报告是给你读的材料，不是给人读的成品。请不要复述它。
+
+· 先形成一个可讨论的中心听感，整段话围绕它展开；
+· 选 2–4 个能互相照亮的证据，其余的留着别端上来；
+· 把数字译成耳朵可感知的动作——「气声 25%」不是数字，是嘴贴到了麦克风上；
+· 区分「测得的现象」和「你的理解」，后者要讲明是你的理解；
+· 大胆鉴赏，但不冒充作者本意；
+· 最后带人回到一个具体时刻，由人的耳朵完成判断。
+
+体裁：有中心、有证据、可回听验证的沉浸式鉴赏。
+"""
+
+
+def print_etiquette(deep=False):
+    print(ETIQUETTE_DEEP if deep else ETIQUETTE_SHALLOW)
+
+
 def read_cache(path):
     try:
         return json.loads(path.read_text())
@@ -886,6 +914,7 @@ def main(argv=None):
             except lyrics.LyricError as error:
                 print(f"配词失败：{error}（报告照常打印）", file=sys.stderr)
                 lyric_failed = True
+        print_etiquette(deep=args.deep)
         print_shallow_report(data, cache_dir)
         if args.deep:
             print_deep_report(run_deep(data, cache_dir, args.force), cache_dir)
