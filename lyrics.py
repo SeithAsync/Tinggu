@@ -27,6 +27,10 @@ SEARCH_LIMIT = 10
 DURATION_TOLERANCE_S = 2.0
 TAIL_MISMATCH_S = 30.0
 TIMESTAMP_RE = re.compile(r"\[(\d{1,3}):([0-5]?\d)(?:[.:](\d{1,3}))?\]")
+CREDIT_RE = re.compile(r"^(作词|作曲|编曲|监制|制作人?|混音|录音|母带)\s*[:：]")
+CREDIT_TAIL_RE = re.compile(
+    r"(by\s*[:：]|[Ee]ngineer|OP\s*/\s*SP|出品|发行|版权|监制|策划|制作|编写|录音|混音|母带"
+    r"|[Pp]roduced|[Mm]ix(?:ed|ing)|[Mm]aster(?:ed|ing)|[Aa]rrangement|[Rr]ecord(?:ed|ing))")
 
 
 class LyricError(Exception):
@@ -93,7 +97,7 @@ def parse_lrc(text):
         if not stamps:
             continue
         content = TIMESTAMP_RE.sub("", raw).strip()
-        if not content:
+        if not content or CREDIT_RE.match(content):  # 开头制作名单不是歌词，别挂到 0:00 的人声事件上
             continue
         for stamp in stamps:
             minutes = int(stamp.group(1))
@@ -103,6 +107,28 @@ def parse_lrc(text):
             lines.append([round(minutes * 60 + seconds + millis / 1000, 3), content])
     lines.sort(key=lambda item: item[0])
     return lines
+
+
+def strip_credits(lines, vocal_start=None, vocal_end=None):
+    """剔除混进词里的带戳制作名单（网易 LRC 惯把名单塞头尾）。
+    双条件才剔：①行文本命中名单模式 ②时间戳落在人声区间外（留 2s 余量）。
+    没有人声区间信息就原样返回——宁可留着，不误杀真词。"""
+    if vocal_start is None or vocal_end is None:
+        return lines
+    kept = []
+    for start, text in lines:
+        outside = start < vocal_start - 2 or start > vocal_end + 2
+        if outside and CREDIT_TAIL_RE.search(text):
+            continue
+        kept.append([start, text])
+    return kept
+
+
+def vocal_span(segments):
+    """从人声段列表取 (首起点, 末终点)；空列表回 (None, None)。"""
+    if not segments:
+        return None, None
+    return float(segments[0][0]), float(segments[-1][1])
 
 
 def local_duration_s(audio_path, cache_dir):

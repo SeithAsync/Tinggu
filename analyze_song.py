@@ -4,6 +4,7 @@
 用法：python analyze_song.py <音频路径> <输出目录>
 """
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -47,6 +48,70 @@ def atomic_write_json(path, data):
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
     os.replace(temp, path)
+
+
+SALIENCE_NAMES = ("总能量", "低频", "中低", "中频", "高频", "气声频段", "打击能量", "亮度")
+
+
+def analyze_salience(curves, events, duration, fps):
+    """从已在内存的八路曲线提取注意力候选区，不读取音频。"""
+    import numpy as np
+    seconds = max(0, int(math.ceil(duration)))
+    if seconds == 0:
+        return {"salienceVersion": 1, "peaks": []}
+    grid = []
+    for curve in curves:
+        values = np.asarray(curve, dtype=float)
+        row = []
+        for second in range(seconds):
+            start, end = round(second * fps), round((second + 1) * fps)
+            chunk = values[max(0, start):max(start + 1, end)]
+            row.append(float(np.mean(chunk)) if len(chunk) else 0.0)
+        grid.append(np.asarray(row))
+    contributions = np.zeros((len(grid), seconds))
+    signed_short = np.zeros((len(grid), seconds))
+    def window_mean(values, start, end, fallback):
+        window = values[max(0, start):min(seconds, end)]
+        return float(np.mean(window)) if len(window) else float(values[fallback])
+    for channel, values in enumerate(grid):
+        short = np.zeros(seconds)
+        long = np.zeros(seconds)
+        for t in range(seconds):
+            short[t] = window_mean(values, t, t + 1, t) - window_mean(values, t - 1, t, t)
+            long[t] = window_mean(values, t, t + 10, t) - window_mean(values, t - 10, t, t)
+        signed_short[channel] = short
+        for delta in (short, long):
+            absolute = np.abs(delta)
+            std = float(np.std(absolute))
+            if std > 0:
+                contributions[channel] += (absolute - float(np.mean(absolute))) / std
+    scores = contributions.sum(axis=0)
+    event_map = {}
+    for event in events or []:
+        second = min(seconds - 1, max(0, round(float(event.get("t", 0)))))
+        scores[second] += 2.0
+        event_map.setdefault(second, []).append(event.get("label", ""))
+    selected = []
+    for t in sorted(range(seconds), key=lambda item: scores[item], reverse=True):
+        if scores[t] < 3.0 or any(abs(t - old) < 8 for old in selected):
+            continue
+        selected.append(t)
+        if len(selected) == 5:
+            break
+    peaks = []
+    for t in sorted(selected):
+        evidence = list(dict.fromkeys(label for label in event_map.get(t, []) if label))
+        for channel in np.argsort(contributions[:, t])[::-1]:
+            if len(evidence) >= 3:
+                break
+            values = grid[channel]
+            before = window_mean(values, t - 1, t, t)
+            delta = float(signed_short[channel, t])
+            denominator = abs(before) + float(np.mean(np.abs(values))) * 0.05
+            percent = round(delta / denominator * 100) if denominator else 0
+            evidence.append(f"{SALIENCE_NAMES[channel]} {percent:+d}%")
+        peaks.append({"t": float(t), "score": round(float(scores[t]), 1), "evidence": evidence[:3]})
+    return {"salienceVersion": 1, "peaks": peaks}
 
 
 def smooth_curve(curve, sr, np):
@@ -235,6 +300,11 @@ def analyze(audio_file, output_dir):
         for start, end in instrument_segments:
             events.extend(({"t": start, "label": f"{name}进场"}, {"t": end, "label": f"{name}退潮"}))
     events.sort(key=lambda event: (event["t"], event["label"]))
+    salience_events = [dict(event, label=event["label"].replace("退潮", "退场"))
+                       for event in events if event["label"].startswith("人声") or
+                       any(event["label"].startswith(name) for name in instruments)]
+    salience = analyze_salience([rms] + [curve for _, curve in band_curves] + [perc_smooth, centroid],
+                                salience_events, duration, sr / HOP)
 
     import matplotlib
     matplotlib.use("Agg")
@@ -268,6 +338,7 @@ def analyze(audio_file, output_dir):
         "name": audio_file.stem, "duration": round(duration, 1), "bpm": round(tempo), "key": dominant_key,
         "segments": segments, "spectrogram": str(img_path), "instruments": instruments,
         "instrumentsMeta": instruments_meta,
+        "salience": salience, "salienceVersion": 1,
         "arrangement": {"percussiveEntry": percussive_entry, "bands": band_results,
                         "chromaBySegment": chroma_by_segment, "brightnessBySegment": brightness_by_segment,
                         "brightnessTrend": brightness_trend, "vocalSegments": vocal_segments, "events": events},

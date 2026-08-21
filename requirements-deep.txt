@@ -5,3 +5,4 @@ demucs
 basic-pitch
 onnxruntime
 pretty-midi
+praat-parselmouth  # 可选：不装则声线质感的哑度/振幅抖动/噪比三项自动跳过，其余照出

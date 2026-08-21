@@ -112,6 +112,101 @@ def _merge_windows(windows):
     return spans
 
 
+def _chord_root(chord):
+    if not chord or chord == "?":
+        return None
+    return chord[:2] if len(chord) > 1 and chord[1] == "#" else chord[:1]
+
+
+def merge_dual(notes_spans, chroma_spans, return_sources=False):
+    """逐窗按双路印证规则合并；输入应已对齐到同一窗口网格。"""
+    notes_spans = notes_spans or []
+    chroma_spans = chroma_spans or []
+    count = max(len(notes_spans), len(chroma_spans))
+    windows = []
+    sources = []
+    for index in range(count):
+        note = notes_spans[index] if index < len(notes_spans) else None
+        chroma = chroma_spans[index] if index < len(chroma_spans) else None
+        reference = note or chroma
+        if reference is None:
+            continue
+        a = (note or {}).get("chord", "?")
+        b = (chroma or {}).get("chord", "?")
+        conf_a = float((note or {}).get("conf", (note or {}).get("confidence", 0.0)))
+        conf_b = float((chroma or {}).get("conf", (chroma or {}).get("confidence", 0.0)))
+        source = None
+        if a == b and a != "?":
+            name, confidence, source = a, round((conf_a + conf_b) / 2, 2), "both"
+        elif a != "?" and b == "?":
+            name, confidence, source = a, conf_a, "notes"
+        elif a == "?" and b != "?":
+            name, confidence, source = b, conf_b, "chroma"
+        elif a != "?" and b != "?" and _chord_root(a) == _chord_root(b):
+            name = min((a, b), key=lambda item: (len(item) - len(_chord_root(item)), len(item)))
+            confidence, source = min(conf_a, conf_b), "root-agree"
+        else:
+            name, confidence = "?", 0.0
+        windows.append((name, float(reference["start"]), float(reference["end"]),
+                        round(confidence, 2)))
+        sources.append(source)
+    merged = _merge_windows(windows)
+    return (merged, sources) if return_sources else merged
+
+
+def expand_to_grid(spans, bpm, duration):
+    """把 analyze 已归并的 spans 展回两拍网格，供逐窗双路印证。"""
+    try:
+        bpm = float(bpm)
+    except (TypeError, ValueError):
+        bpm = 0.0
+    width = 120 / bpm if math.isfinite(bpm) and bpm > 0 else 2.0
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if not math.isfinite(duration) or duration < 0:
+        duration = 0.0
+    result = []
+    start = 0.0
+    while start < duration:
+        end = min(duration, start + width)
+        span = next((item for item in spans or []
+                     if float(item["start"]) <= start < float(item["end"])), None)
+        result.append({"chord": (span or {}).get("chord", "?"), "start": round(start, 2),
+                       "end": round(end, 2), "conf": float((span or {}).get(
+                           "conf", (span or {}).get("confidence", 0.0)))})
+        start = end
+    return result
+
+
+def assemble_dual(notes_analysis, chroma_analysis, bpm, duration):
+    """合成最终 chordAnalysis，并在合并结果上重跑 loop/pattern。"""
+    notes_analysis = notes_analysis or {}
+    chroma_analysis = chroma_analysis or {}
+    notes_windows = expand_to_grid(notes_analysis.get("spans"), bpm, duration)
+    chroma_windows = chroma_analysis.get("spans") or []
+    spans, sources = merge_dual(notes_windows, chroma_windows, return_sources=True)
+    key_source = max((notes_analysis, chroma_analysis),
+                     key=lambda item: float(item.get("keyConfidence") or 0))
+    key = key_source.get("key")
+    confidence = float(key_source.get("keyConfidence") or 0)
+    key_root, mode = 0, "major"
+    if key:
+        root_name, mode = key.split()
+        key_root = PITCH_NAMES.index(root_name)
+    counts = {name: sources.count(name) for name in ("both", "notes", "chroma", "root-agree")}
+    total = len(sources)  # 分母取全窗：三项和不足 100% 的缺口=双路都读不动的窗
+    source_stats = {name: round(count / total, 2) if total else 0.0
+                    for name, count in counts.items()}
+    return {"key": key, "keyConfidence": round(confidence, 2), "spans": [
+        {"chord": item["chord"], "start": item["start"], "end": item["end"],
+         "conf": item["confidence"]} for item in spans],
+        "loop": _loop(spans, key_root, mode) if key else None, "sourceStats": source_stats,
+        "sourceWindows": [{"start": item["start"], "end": item["end"], "source": source}
+                          for item, source in zip(notes_windows or chroma_windows, sources)]}
+
+
 def _rotations(sequence):
     return {tuple(sequence[index:] + sequence[:index]) for index in range(len(sequence))}
 
